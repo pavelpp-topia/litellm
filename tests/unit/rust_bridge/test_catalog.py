@@ -30,7 +30,7 @@ def isolated_configuration(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
 @pytest.mark.parametrize("provider", (None, "bedrock", "mistral", "anthropic", "openai", "azure_ai", "unknown"))
 @pytest.mark.parametrize("process", (None, False, True))
 @pytest.mark.parametrize("environment", (None, "0", "1"))
-def test_shipped_decisions(
+def test_route_decisions_follow_supplied_rules(
     monkeypatch: pytest.MonkeyPatch,
     route: Route,
     provider: str | None,
@@ -41,17 +41,27 @@ def test_shipped_decisions(
     if environment is not None:
         monkeypatch.setenv("LITELLM_RUST", environment)
     context: Final = RouteContext(route, provider=provider, model="test-model")
+    rules: Final[Rules] = (
+        RouteRule(Route.OCR, Rollout.RUST_REQUIRED),
+        RouteRule(Route.TRANSCRIPTION, Rollout.RUST_REQUIRED, providers=frozenset({"bedrock"})),
+        RouteRule(Route.MESSAGES, Rollout.RUST_OPT_IN, providers=frozenset({"anthropic"})),
+        RouteRule(Route.COST_CALCULATOR, Rollout.RUST_OPT_OUT),
+    )
 
     if route is Route.OCR or (route is Route.TRANSCRIPTION and provider == "bedrock"):
-        assert catalog.rollout(context) is Rollout.RUST_REQUIRED
-        assert catalog.decision(context) is Decision.RUST_REQUIRED
+        assert catalog.rollout(context, rules) is Rollout.RUST_REQUIRED
+        assert catalog.decision(context, rules) is Decision.RUST_REQUIRED
     elif route is Route.MESSAGES and provider == "anthropic":
-        assert catalog.rollout(context) is Rollout.RUST_OPT_IN
+        assert catalog.rollout(context, rules) is Rollout.RUST_OPT_IN
         opted_in: Final = environment == "1" or (environment is None and process is True)
-        assert catalog.decision(context) is (Decision.RUST_WITH_FALLBACK if opted_in else Decision.PYTHON)
+        assert catalog.decision(context, rules) is (Decision.RUST_WITH_FALLBACK if opted_in else Decision.PYTHON)
+    elif route is Route.COST_CALCULATOR:
+        assert catalog.rollout(context, rules) is Rollout.RUST_OPT_OUT
+        opted_out: Final = environment == "0" or (environment is None and process is False)
+        assert catalog.decision(context, rules) is (Decision.PYTHON if opted_out else Decision.RUST_WITH_FALLBACK)
     else:
-        assert catalog.rollout(context) is Rollout.PYTHON_ONLY
-        assert catalog.decision(context) is Decision.PYTHON
+        assert catalog.rollout(context, rules) is Rollout.PYTHON_ONLY
+        assert catalog.decision(context, rules) is Decision.PYTHON
 
 
 @pytest.mark.parametrize("route", tuple(Route))
