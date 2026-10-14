@@ -10267,3 +10267,21 @@ async def test_tool_message_cache_point_skipped_for_glm_without_eligible_message
     )
     assert result == async_result
     assert all(all("cachePoint" not in block for block in message["content"]) for message in result)
+
+
+def test_bedrock_cache_point_position_helpers():
+    """Position helpers: None and non-glm models keep emitting; the zai.glm family is blocked per position (issue #46254)."""
+    from litellm.llms.bedrock.common_utils import (
+        bedrock_model_accepts_cache_point_after_tool_result,
+        bedrock_model_accepts_cache_point_in_tool_config,
+    )
+
+    for helper in (
+        bedrock_model_accepts_cache_point_in_tool_config,
+        bedrock_model_accepts_cache_point_after_tool_result,
+    ):
+        assert helper(None) is True
+        assert helper("anthropic.claude-3-5-haiku-20241022-v1:0") is True
+        assert helper("global.zai.glm-5.3") is False
+        assert helper("us.zai.glm-5") is False
+        assert helper("bedrock/converse/global.zai.glm-5.3") is False
