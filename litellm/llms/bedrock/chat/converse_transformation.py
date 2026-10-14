@@ -105,6 +105,7 @@ from ..common_utils import (
     BedrockModelInfo,
     bedrock_converse_supports_parallel_tool_use_config,
     bedrock_model_accepts_cache_points,
+    bedrock_model_accepts_cache_point_in_tool_config,
     bedrock_reasoning_effort_disabled,
     bedrock_rejects_stop_sequences,
     get_anthropic_beta_from_headers,
@@ -1953,7 +1954,12 @@ class AmazonConverseConfig(BaseConfig):
 
         # Append cachePoint to tools if cache_control_injection_points has tool_config
         cache_injection_points: Final = additional_request_params.pop("cache_control_injection_points", None)
-        if cache_injection_points and len(bedrock_tools) > 0 and bedrock_model_accepts_cache_points(model):
+        if (
+            cache_injection_points
+            and len(bedrock_tools) > 0
+            and bedrock_model_accepts_cache_points(model)
+            and bedrock_model_accepts_cache_point_in_tool_config(model)
+        ):
             for point in cache_injection_points:
                 if point.get("location") == "tool_config":
                     cache_point = self._build_cache_point_block(point.get("control"), model)
