@@ -10145,3 +10145,125 @@ async def test_bedrock_user_file_element_becomes_document_block(sync_mode: bool)
     assert content[0] == {"text": "Summarize this report"}
     assert content[1]["document"]["source"] == {"bytes": base64.b64encode(pdf_bytes).decode()}
     assert content[1]["document"]["format"] == "pdf"
+
+
+@pytest.mark.asyncio
+async def test_tool_config_injection_point_skipped_for_glm_family() -> None:
+    """zai.glm models reject cachePoint in toolConfig (issue #46254): the injection point must be skipped."""
+    config: Final = AmazonConverseConfig()
+    messages: Final = [{"role": "user", "content": "What is the weather?"}]
+    optional_params: Final = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                    },
+                },
+            }
+        ],
+        "cache_control_injection_points": [{"location": "tool_config"}],
+    }
+    result: Final = config._transform_request(
+        model="global.zai.glm-5.3",
+        messages=messages,
+        optional_params=optional_params,
+        litellm_params={},
+    )
+    tools: Final = result["toolConfig"]["tools"]
+    assert all("cachePoint" not in tool for tool in tools)
+
+
+@pytest.mark.asyncio
+async def test_tool_message_cache_point_moves_off_tool_result_for_glm() -> None:
+    """zai.glm rejects a cachePoint directly after toolResult; it moves to the closest earlier text block (issue #46254)."""
+    from litellm.litellm_core_utils.prompt_templates.factory import (
+        BedrockConverseMessagesProcessor,
+        _bedrock_converse_messages_pt,
+    )
+
+    messages: Final = [
+        {"role": "user", "content": "What's the weather?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_123",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Weather data: sunny, 25°C",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        },
+    ]
+    model: Final = "bedrock/global.zai.glm-5.3"
+
+    result: Final = _bedrock_converse_messages_pt(messages=messages, model=model, llm_provider="bedrock_converse")
+    async_result: Final = await BedrockConverseMessagesProcessor._bedrock_converse_messages_pt_async(
+        messages=messages, model=model, llm_provider="bedrock_converse"
+    )
+    assert result == async_result
+
+    assert len(result) == 3
+    tool_message_content: Final = result[2]["content"]
+    # No cachePoint directly after the toolResult
+    assert all("cachePoint" not in block for block in tool_message_content)
+    # The point moved to the closest earlier message ending in text
+    user_content: Final = result[0]["content"]
+    assert user_content[-1] == {"cachePoint": {"type": "default"}}
+    # Exactly one cache point overall: moved, not duplicated or dropped
+    total_points: Final = sum(sum(1 for block in message["content"] if "cachePoint" in block) for message in result)
+    assert total_points == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_message_cache_point_skipped_for_glm_without_eligible_message() -> None:
+    """With no earlier text block to move to, the tool message cache point is skipped rather than failing (issue #46254)."""
+    from litellm.litellm_core_utils.prompt_templates.factory import (
+        BedrockConverseMessagesProcessor,
+        _bedrock_converse_messages_pt,
+    )
+
+    messages: Final = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_123",
+            "content": "Weather data: sunny, 25°C",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+    model: Final = "bedrock/global.zai.glm-5.3"
+
+    result: Final = _bedrock_converse_messages_pt(messages=messages, model=model, llm_provider="bedrock_converse")
+    async_result: Final = await BedrockConverseMessagesProcessor._bedrock_converse_messages_pt_async(
+        messages=messages, model=model, llm_provider="bedrock_converse"
+    )
+    assert result == async_result
+    assert all(all("cachePoint" not in block for block in message["content"]) for message in result)
