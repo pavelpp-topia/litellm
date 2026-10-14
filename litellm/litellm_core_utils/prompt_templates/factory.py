@@ -4571,7 +4571,12 @@ class BedrockConverseMessagesProcessor:
                         model=model,
                     )
                     if cache_point_block is not None:
-                        tool_content.append(cache_point_block)
+                        _place_tool_message_cache_point(
+                            contents=contents,
+                            tool_content=tool_content,
+                            cache_point_block=cache_point_block,
+                            model=model,
+                        )
 
                 msg_i += 1
             # Deduplicate toolResult blocks with the same toolUseId
@@ -4815,6 +4820,47 @@ class BedrockConverseMessagesProcessor:
         return assistant_parts
 
 
+def _place_tool_message_cache_point(
+    contents: list[BedrockMessageBlock],  # mutable-ok: appends into the caller's lists by design
+    tool_content: list[BedrockContentBlock],  # mutable-ok: appends into the caller's lists by design
+    cache_point_block: BedrockContentBlock,
+    model: str,
+) -> None:
+    """
+    Place a tool message's ``cachePoint`` block where the model accepts it.
+
+    Most models take the block directly after the ``toolResult`` it belongs to, so
+    it is appended to ``tool_content``. zai.glm-family models reject that exact
+    position ("Cache point cannot be inserted after the preceding content block for
+    this model", issue #46254), so for them the point moves to the closest earlier
+    message whose last block is text - a position verified against Converse on
+    ``global.zai.glm-5.3`` - and the cached prefix simply ends a little earlier.
+    When no earlier message qualifies, the point is skipped for this turn, which
+    only means one fewer breakpoint; the alternative is the request failing.
+    """
+    from litellm.llms.bedrock.common_utils import (
+        bedrock_model_accepts_cache_point_after_tool_result,
+    )
+
+    if (
+        not tool_content
+        or "toolResult" not in tool_content[-1]
+        or bedrock_model_accepts_cache_point_after_tool_result(model)
+    ):
+        tool_content.append(cache_point_block)
+        return
+    eligible: Final = next(
+        (
+            earlier
+            for earlier in reversed(contents)
+            if (earlier_content := earlier.get("content")) and "text" in earlier_content[-1]
+        ),
+        None,
+    )
+    if eligible is not None:
+        eligible["content"].append(cache_point_block)
+
+
 def _bedrock_converse_messages_pt(
     messages: list,
     model: str,
@@ -4947,7 +4993,12 @@ def _bedrock_converse_messages_pt(
                     model=model,
                 )
                 if cache_point_block is not None:
-                    tool_content.append(cache_point_block)
+                    _place_tool_message_cache_point(
+                        contents=contents,
+                        tool_content=tool_content,
+                        cache_point_block=cache_point_block,
+                        model=model,
+                    )
 
             msg_i += 1
         # Deduplicate toolResult blocks with the same toolUseId
