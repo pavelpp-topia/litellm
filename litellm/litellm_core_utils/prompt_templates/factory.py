@@ -4151,6 +4151,26 @@ def _sort_bedrock_assistant_content_blocks(
     return sorted(blocks, key=_sort_key)
 
 
+def _place_assistant_cache_points_before_tools(
+    blocks: Sequence[BedrockContentBlock], model: str
+) -> Sequence[BedrockContentBlock]:
+    from litellm.llms.bedrock.common_utils import bedrock_model_accepts_cache_point_after_tool_use
+
+    if bedrock_model_accepts_cache_point_after_tool_use(model):
+        return blocks
+    checkpoint: Final = next((block for block in blocks if "cachePoint" in block), None)
+    if checkpoint is None:
+        return blocks
+    content: Final = tuple(block for block in blocks if "cachePoint" not in block)
+    text_index: Final = next(
+        (index for index in range(len(content) - 1, -1, -1) if content[index].get("text", "").strip()),
+        None,
+    )
+    if text_index is None:
+        return content
+    return (*content[: text_index + 1], checkpoint, *content[text_index + 1 :])
+
+
 def _insert_assistant_continue_message(
     messages: list[BedrockMessageBlock],
     assistant_continue_message: str | ChatCompletionAssistantMessage | None = None,
@@ -4676,7 +4696,11 @@ class BedrockConverseMessagesProcessor:
                 msg_i += 1
 
             assistant_content = _deduplicate_bedrock_content_blocks(assistant_content, "toolUse")
-            assistant_content = _sort_bedrock_assistant_content_blocks(assistant_content)
+            assistant_content = list(
+                _place_assistant_cache_points_before_tools(
+                    _sort_bedrock_assistant_content_blocks(assistant_content), model
+                )
+            )
 
             if assistant_content:
                 contents.append(BedrockMessageBlock(role="assistant", content=assistant_content))
@@ -5099,7 +5123,9 @@ def _bedrock_converse_messages_pt(
             msg_i += 1
 
         assistant_content = _deduplicate_bedrock_content_blocks(assistant_content, "toolUse")
-        assistant_content = _sort_bedrock_assistant_content_blocks(assistant_content)
+        assistant_content = list(
+            _place_assistant_cache_points_before_tools(_sort_bedrock_assistant_content_blocks(assistant_content), model)
+        )
 
         if assistant_content:
             contents.append(BedrockMessageBlock(role="assistant", content=assistant_content))

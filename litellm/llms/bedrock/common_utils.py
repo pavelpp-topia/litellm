@@ -1249,6 +1249,10 @@ def bedrock_model_accepts_cache_point_after_tool_result(model: str | None) -> bo
     return not _ZAI_GLM_FAMILY_MODEL_RE.search(model)
 
 
+def bedrock_model_accepts_cache_point_after_tool_use(model: str | None) -> bool:
+    return model is None or _ZAI_GLM_FAMILY_MODEL_RE.search(model) is None
+
+
 def bedrock_supports_tool_search(model: str) -> bool:
     """
     Whether Bedrock InvokeModel admits the ``tool_search_tool_*`` tool types on ``model``.
